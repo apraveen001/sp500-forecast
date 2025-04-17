@@ -1,0 +1,19 @@
+name: sp500-forecast
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - statsmodels
+  - seaborn
+  - jupyterlab
+  - plotly
+  - xgboost
+  - lightgbm
+  - nlopt
+  - pip
+  - pip:
+      - tensorflow
