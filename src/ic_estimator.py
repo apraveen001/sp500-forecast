@@ -20,6 +20,12 @@ def rolling_initial_conditions(
         DataFrame indexed by dates[t], with columns:
           ['phi','theta','omega','alpha','beta','entropy']
     """
+    # Ensure DateTimeIndex has a defined frequency to avoid statsmodels warnings
+    if prices.index.freq is None:
+        inferred = pd.infer_freq(prices.index)
+        if inferred:
+            prices = prices.asfreq(inferred)
+
     ic_list = []
     dates = prices.index[window:]
 
@@ -27,7 +33,7 @@ def rolling_initial_conditions(
         # slice window of prices
         window_prices = prices.loc[:end_date].iloc[-window:]
 
-        # 1) fit ARMA(1,1) for the mean process
+        # 1) fit ARMA(1,1) for the mean process using ARIMA(order=(1,0,1))
         arma_res = ARIMA(window_prices, order=(1, 0, 1)).fit()
         phi = arma_res.params.get('ar.L1', np.nan)
         theta = arma_res.params.get('ma.L1', np.nan)
