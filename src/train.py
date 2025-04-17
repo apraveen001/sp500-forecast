@@ -31,8 +31,14 @@ def main():
     # 3. Technical features
     tech_df = build_technical_features(df)
 
-    # 4. Merge and clean
-    df_all = tech_df.join(ic_df, how='inner').dropna()
+    # 4. Merge and clean, include raw Close column for target
+    df_target = df[['Close']]
+    df_all = (
+        df_target
+        .join(tech_df, how='inner')
+        .join(ic_df, how='inner')
+        .dropna()
+    )
 
     # 5. Scale features
     scaler = MinMaxScaler()
@@ -45,6 +51,7 @@ def main():
     # 6. Create windowed datasets
     window_size = 20
     feat_array = data_scaled.values
+    # 'Close' is now the first column
     target_idx = df_all.columns.get_loc('Close')
     X, y = create_windowed_dataset_multivariate(feat_array, window_size, target_idx)
 
@@ -70,16 +77,16 @@ def main():
     scale = scaler.scale_[col_idx]
     min_  = scaler.min_[col_idx]
 
-    y_val_orig   = (y_val - min_) / scale
-    val_preds_orig  = (val_preds - min_) / scale
-    y_test_orig  = (y_test - min_) / scale
-    test_preds_orig = (test_preds - min_) / scale
+    # reverse MinMax: X_norm = (X - min_) / scale  => X = X_norm * scale + min_
+    y_val_orig   = y_val * scale + min_
+    val_preds_orig  = val_preds * scale + min_
+    y_test_orig  = y_test * scale + min_
+    test_preds_orig = test_preds * scale + min_
 
     # 11. Prepare SVM data (directional returns)
     def build_svm_data(preds, actuals):
         ret = (preds[1:] - preds[:-1]) / preds[:-1]
         labels = (ret > 0).astype(int)
-        # Single-feature (predicted return)
         X_svm = ret.reshape(-1, 1)
         return X_svm, labels
 

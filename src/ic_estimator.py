@@ -1,5 +1,15 @@
 # src/ic_estimator.py
-#added date handling
+
+import warnings
+# Suppress warnings from statsmodels and arch
+warnings.filterwarnings(
+    "ignore",
+    message="A date index has been provided, but it has no associated frequency information"
+)
+warnings.filterwarnings(
+    "ignore",
+    message="Non-stationary starting autoregressive parameters found"
+)
 
 import pandas as pd
 import numpy as np
@@ -21,37 +31,30 @@ def rolling_initial_conditions(
         DataFrame indexed by dates[t], with columns:
           ['phi','theta','omega','alpha','beta','entropy']
     """
-    # Ensure DateTimeIndex has a defined frequency to avoid statsmodels warnings
-    if prices.index.freq is None:
-        inferred = pd.infer_freq(prices.index)
-        if inferred:
-            prices = prices.asfreq(inferred)
-
     ic_list = []
     dates = prices.index[window:]
 
     for end_date in dates:
-        # slice window of prices
         window_prices = prices.loc[:end_date].iloc[-window:]
 
-        # 1) fit ARMA(1,1) for the mean process using ARIMA(order=(1,0,1))
-        arma_res = ARIMA(window_prices, order=(1, 0, 1)).fit()
+        ts = pd.Series(window_prices.values)
+        # 1) ARMA(1,1) mean
+        
+        arma_res = ARIMA(ts, order=(1, 0, 1)).fit()
         phi = arma_res.params.get('ar.L1', np.nan)
         theta = arma_res.params.get('ma.L1', np.nan)
-
-        # residuals from ARMA
         resid = arma_res.resid
 
-        # 2) fit GARCH(1,1) on residuals
+        # 2) GARCH(1,1)
         garch_res = arch_model(resid, p=1, q=1).fit(disp='off')
         omega = garch_res.params.get('omega', np.nan)
         alpha = garch_res.params.get('alpha[1]', np.nan)
         beta = garch_res.params.get('beta[1]', np.nan)
 
-        # 3) standardized residuals
+        # 3) Standardized residuals
         std_resid = resid / garch_res.conditional_volatility
 
-        # 4) compute Shannon entropy
+        # 4) Shannon entropy
         hist, _ = np.histogram(std_resid, bins=bins)
         e = entropy(hist + 1e-8)
 
