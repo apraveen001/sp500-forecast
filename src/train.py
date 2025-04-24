@@ -20,6 +20,7 @@ from ic_estimator import rolling_initial_conditions
 from features import build_technical_features
 from model_lstm import build_lstm_model, train_lstm
 from model_svm import build_svm, train_svm, evaluate_svm
+from strategy import evaluate_strategy, plot_cumulative_returns
 
 
 def create_windowed_dataset_multivariate(data_array: np.ndarray, window_size: int, target_idx: int):
@@ -116,6 +117,14 @@ def main():
     scale, min_ = scaler.scale_[target_idx], scaler.min_[target_idx]
     test_preds_orig = test_preds * scale + min_
     y_test_orig     = y_test   * scale + min_
+    
+    
+    res = evaluate_strategy(test_preds_orig, y_test_orig)
+    print(f"Total strategy return: {res['total_return']:.2%}")
+    print(f"Average return per trade: {res['avg_return_per_trade']:.2%}")
+
+    plot_cumulative_returns(res['cumulative_returns'], save_path='plots/strategy_cum_returns.png')
+
 
     # 10. SVM
     svm = build_svm()
