@@ -1,26 +1,17 @@
 # src/train.py
 
 import os
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 import joblib
+import numpy as np
 
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import (
-    confusion_matrix,
-    ConfusionMatrixDisplay,
-    roc_curve,
-    auc
-)
 from tensorflow.keras.models import load_model
 
 from data_utils import load_sp500_csv, preprocess_prices
 from ic_estimator import rolling_initial_conditions
 from features import build_technical_features
 from model_lstm import build_lstm_model, train_lstm
-from model_svm import build_svm, train_svm, evaluate_svm
-from strategy import evaluate_strategy, plot_cumulative_returns
+from model_svm import build_svm, train_svm
 
 
 def create_windowed_dataset_multivariate(data_array: np.ndarray, window_size: int, target_idx: int):
@@ -39,11 +30,9 @@ def build_svm_data(preds: np.ndarray, actuals: np.ndarray):
     """
     pred_ret = (preds[1:] - preds[:-1]) / preds[:-1]
     X_svm = pred_ret.reshape(-1, 1)
-
     true_ret = (actuals[1:] - actuals[:-1]) / actuals[:-1]
-    labels = (true_ret > 0).astype(int)
-
-    return X_svm, labels
+    y_svm = (true_ret > 0).astype(int)
+    return X_svm, y_svm
 
 
 def prepare_data(window_size: int = 20, ic_window: int = 252):
@@ -67,20 +56,15 @@ def prepare_data(window_size: int = 20, ic_window: int = 252):
 
     # 5. Scale
     scaler = MinMaxScaler()
-    data_scaled = pd.DataFrame(
-        scaler.fit_transform(df_all),
-        index=df_all.index,
-        columns=df_all.columns
-    )
+    data_scaled = scaler.fit_transform(df_all)
 
-    # Save scaler for evaluation
+    # persist scaler
     os.makedirs('models', exist_ok=True)
     joblib.dump(scaler, 'models/scaler.pkl')
 
     # 6. Window
-    feat_array = data_scaled.values
-    target_idx = df_all.columns.get_loc('Close')
-    X, y = create_windowed_dataset_multivariate(feat_array, window_size, target_idx)
+    target_idx = list(df_all.columns).index('Close')
+    X, y = create_windowed_dataset_multivariate(data_scaled, window_size, target_idx)
 
     # 7. Split (80/10/10)
     n = X.shape[0]
@@ -91,76 +75,36 @@ def prepare_data(window_size: int = 20, ic_window: int = 252):
     X_val,   y_val   = X[train_end:val_end], y[train_end:val_end]
     X_test,  y_test  = X[val_end:], y[val_end:]
 
-    return X_train, y_train, X_val, y_val, X_test, y_test, target_idx, scaler
+    return X_train, y_train, X_val, y_val, X_test, y_test, target_idx
 
 
 def main():
-    os.makedirs('plots', exist_ok=True)
-
-    # Prepare
     window_size = 20
-    ic_window = 252
-    (X_train, y_train,
-     X_val, y_val,
-     X_test, y_test,
-     target_idx, scaler) = prepare_data(window_size, ic_window)
+    ic_window   = 252
 
-    # 8. LSTM
+    X_train, y_train, X_val, y_val, X_test, y_test, target_idx = prepare_data(window_size, ic_window)
+
+    # 8. Build & train LSTM
     model = build_lstm_model((window_size, X_train.shape[2]))
     train_lstm(model, X_train, y_train, X_val, y_val)
-
-    # save LSTM
     model.save('models/lstm_model.h5')
 
-    # 9. LSTM → test preds
-    test_preds = model.predict(X_test).flatten()
+    # 9. Invert-scaling helpers
+    scaler = joblib.load('models/scaler.pkl')
     scale, min_ = scaler.scale_[target_idx], scaler.min_[target_idx]
-    test_preds_orig = test_preds * scale + min_
-    y_test_orig     = y_test   * scale + min_
-    
-    
-    res = evaluate_strategy(test_preds_orig, y_test_orig)
-    print(f"Total strategy return: {res['total_return']:.2%}")
-    print(f"Average return per trade: {res['avg_return_per_trade']:.2%}")
 
-    plot_cumulative_returns(res['cumulative_returns'], save_path='plots/strategy_cum_returns.png')
+    # 10. Generate test predictions
+    preds = model.predict(X_test).flatten()
+    preds_orig = preds * scale + min_
+    y_test_orig = y_test * scale + min_
 
-
-    # 10. SVM
+    # 11. Train & save SVM
+    X_svm, y_svm = build_svm_data(preds_orig, y_test_orig)
     svm = build_svm()
-    X_svm, y_svm = build_svm_data(test_preds_orig, y_test_orig)
-    svm = train_svm(svm, X_svm, y_svm)
-
-    # save SVM
+    train_svm(svm, X_svm, y_svm)
     joblib.dump(svm, 'models/svm_model.pkl')
-
-    # metrics
-    acc, report = evaluate_svm(svm, X_svm, y_svm)
-    print(f"SVM Test Accuracy: {acc:.3f}\n")
-    print(report)
-
-    # 11. Confusion matrix
-    cm = confusion_matrix(y_svm, svm.predict(X_svm))
-    disp = ConfusionMatrixDisplay(cm, display_labels=['Bad','Good'])
-    disp.plot(cmap='Blues')
-    plt.title('Confusion Matrix')
-    plt.savefig('plots/confusion_matrix.png')
-    plt.show()
-
-    # 12. ROC curve
-    y_score = svm.decision_function(X_svm)
-    fpr, tpr, _ = roc_curve(y_svm, y_score)
-    roc_auc = auc(fpr, tpr)
-    plt.figure()
-    plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.2f}')
-    plt.plot([0,1],[0,1],'--', label='Random')
-    plt.title('ROC Curve')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.legend(loc='lower right')
-    plt.savefig('plots/roc_curve.png')
-    plt.show()
 
 
 if __name__ == '__main__':
+    os.makedirs('models', exist_ok=True)
     main()
