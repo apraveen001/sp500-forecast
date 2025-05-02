@@ -8,7 +8,7 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 def build_lstm_model(
     input_shape: tuple,
-    lr: float = 0.001
+    lr: float = 0.0005
 ) -> tf.keras.Model:
     """
     Build and compile an LSTM model that predicts next-day price.

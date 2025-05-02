@@ -11,8 +11,8 @@ from sklearn.metrics import (
     ConfusionMatrixDisplay,
     roc_curve,
     auc,
-    mean_absolute_error, # Added import
-    mean_squared_error   # Added import
+    mean_absolute_error,
+    mean_squared_error
 )
 from tensorflow.keras.models import load_model
 
@@ -62,30 +62,51 @@ def build_svm_data(preds: np.ndarray, actuals: np.ndarray):
 
 
 def prepare_test_set(window_size: int = 20, ic_window: int = 252):
-    """Loads data, calculates features, scales, and prepares test split."""
+    """
+    Loads data, calculates features, EXCLUDES IC features, scales,
+    and prepares test split. MIRRORS THE LOGIC IN train.py for feature selection.
+    """
     # 1. Load & preprocess
     df_raw = load_sp500_csv('data/sp500_20_years.csv')
+    # Ensure preprocess_prices keeps needed columns (OHLCV)
     df = preprocess_prices(df_raw)
 
-    # 2. ICs (ARMA-GARCH + entropy)
+    # 2. ICs (ARMA-GARCH + entropy) - Calculate but will be dropped later
     ic_df = rolling_initial_conditions(df['Close'], window=ic_window)
 
-    # 3. Technical features
-    tech_df = build_technical_features(df)
+    # 3. Technical features - Calculate these
+    tech_df = build_technical_features(df) # Contains MAs, RSI, BBands, LogRet, Vol
 
-    # 4. Merge, include Close
-    df_all = (
-        df[['Close']]
+    # 4. Merge features initially (including ICs to align dates correctly)
+    df_all_merged = (
+        # Make sure base df has OHLCV if needed by tech_df or final selection
+        df[['Close', 'Open', 'High', 'Low', 'Volume']]
         .join(tech_df, how='inner')
-        .join(ic_df, how='inner')
-        .dropna()
+        .join(ic_df, how='inner') # Join ICs to align dates/rows
+        .dropna() # Drop NaNs resulting from joins and rolling calculations
     )
-    print(f"Columns before scaling in prepare_test_set: {list(df_all.columns)}") # Debug print
+    print(f"Columns after merging all features in prepare_test_set: {list(df_all_merged.columns)}")
 
-    # 5. Load the FITTED scaler (should be StandardScaler now)
+    # --- NEW: Define columns to KEEP (Exclude ICs) ---
+    # --- This MUST match the columns used for fitting the scaler in train.py ---
+    ic_columns_to_drop = ['phi', 'theta', 'omega', 'alpha', 'beta', 'entropy']
+    # Create the final DataFrame by dropping the IC columns
+    # Use .copy() to avoid SettingWithCopyWarning if modifying df_selected later
+    df_selected = df_all_merged.drop(columns=ic_columns_to_drop).copy()
+
+    print(f"Columns selected for scaling in prepare_test_set: {list(df_selected.columns)}")
+    print(f"Shape after dropping IC columns: {df_selected.shape}")
+    # --- End Feature Selection ---
+
+
+    # 5. Load the FITTED scaler (expects features from df_selected)
     try:
         scaler = joblib.load('models/scaler.pkl')
-        print(f"Loaded scaler object: {scaler}") # Debug print
+        print(f"Loaded scaler object: {scaler}")
+        # Verify scaler expects the same number of features as df_selected
+        if scaler.n_features_in_ != df_selected.shape[1]:
+             print(f"ERROR: Number of features in data ({df_selected.shape[1]}) does not match scaler's expected features ({scaler.n_features_in_})!")
+             raise ValueError("Feature mismatch between evaluation data and loaded scaler.")
     except FileNotFoundError:
         print("ERROR: models/scaler.pkl not found! Run train.py first.")
         raise
@@ -93,27 +114,20 @@ def prepare_test_set(window_size: int = 20, ic_window: int = 252):
         print(f"Error loading scaler.pkl: {e}")
         raise
 
-    # 6. Transform the data using the loaded scaler
-    # Ensure the number of columns matches what the scaler expects
-    if scaler.n_features_in_ != df_all.shape[1]:
-         print(f"ERROR: Number of features in data ({df_all.shape[1]}) does not match scaler's expected features ({scaler.n_features_in_})!")
-         # You might need to align columns here based on scaler.feature_names_in_ if available
-         # Or ensure df_all generation is identical between train and evaluate
-         raise ValueError("Feature mismatch between evaluation data and loaded scaler.")
+    # 6. Transform the SELECTED data using the loaded scaler
+    data_scaled = scaler.transform(df_selected)
+    print(f"Data scaled shape: {data_scaled.shape}")
 
-    data_scaled = scaler.transform(df_all)
-    print(f"Data scaled shape: {data_scaled.shape}") # Debug print
-
-    # 7. Find target index ('Close') - should be 0 based on training
+    # 7. Find target index ('Close') based on df_selected columns
     try:
-        # It's safer to rely on the index confirmed during training
-        target_idx = 0 # Assuming 'Close' was index 0 during training
-        print(f"Using target_idx: {target_idx} (Assuming 'Close' was index 0 in training)")
+        # Find index of 'Close' in the columns that were actually scaled
+        target_idx = list(df_selected.columns).index('Close')
+        print(f"Using target_idx: {target_idx} (based on selected columns)")
     except ValueError:
-        print("ERROR: 'Close' column not found in df_all columns for target_idx calculation!")
+        print("ERROR: 'Close' column not found in df_selected columns!")
         raise
 
-    # 8. Create windowed data
+    # 8. Create windowed data from the scaled, selected features
     X, y = create_windowed_dataset_multivariate(data_scaled, window_size, target_idx)
 
     # 9. Split into test set
@@ -122,34 +136,38 @@ def prepare_test_set(window_size: int = 20, ic_window: int = 252):
     X_test, y_test = X[test_start:], y[test_start:]
 
     # 10. Get corresponding dates for the test set
-    # Index needs careful alignment: df_all starts earlier than scaled data due to dropna
-    # windowed data starts 'window_size' steps into the scaled data
-    # test data starts 'test_start' steps into the windowed data
-    # Overall offset = (len(df_all) - len(data_scaled)) + window_size + test_start
-    # However, it's simpler to align based on the length of y_test
-    test_dates = df_all.index[-len(y_test):] # Get the last N dates corresponding to y_test
+    # Align dates based on the final length of y_test, using the index from df_selected
+    test_dates = df_selected.index[-len(y_test):]
 
-    print(f"X_test shape: {X_test.shape}, y_test shape: {y_test.shape}, test_dates length: {len(test_dates)}") # Debug print
+    print(f"X_test shape: {X_test.shape}, y_test shape: {y_test.shape}, test_dates length: {len(test_dates)}")
 
+    # Return the correct target_idx based on the selected features
     return X_test, y_test, target_idx, test_dates
 
 
+# --- Main function remains largely the same ---
+# --- It will now receive the correct X_test, y_test, target_idx ---
+# --- based on the reduced feature set ---
 def main():
     os.makedirs('plots', exist_ok=True)
 
-    # Prepare test data (loading, feature calculation, scaling, windowing, splitting)
+    # Prepare test data (now excludes IC features before scaling)
     window_size = 20
-    ic_window   = 252
+    ic_window   = 252 # ic_window still needed for calculation, even if dropped later
+    # target_idx returned here is now correct for the data used
     X_test, y_test, target_idx, dates = prepare_test_set(window_size, ic_window)
 
     # Load the trained LSTM model
     try:
+        # This model was trained on data corresponding to the reduced features
         lstm = load_model('models/lstm_model.h5', compile=False)
     except Exception as e:
         print(f"Error loading LSTM model models/lstm_model.h5: {e}")
         raise
 
     # Load the trained SVM model (keep for potential future use)
+    # Note: This SVM was likely trained on data derived from previous models/features
+    # Its performance might be poor until retrained on data derived from this LSTM's predictions
     try:
         svm = joblib.load('models/svm_model.pkl')
     except Exception as e:
@@ -157,6 +175,7 @@ def main():
         svm = None # Set to None if loading fails
 
     # --- Generate predictions from LSTM ---
+    # LSTM input X_test now has the correct number of features (14)
     preds_scaled_flat = lstm.predict(X_test).flatten()
     y_test_scaled_flat = y_test.flatten() # Use the prepared y_test target
 
@@ -168,6 +187,7 @@ def main():
         target_scale = target_params['scale'] # This is Std Dev
         print(f"Loaded Target Mean: {target_mean:.4f}")
         print(f"Loaded Target StdDev: {target_scale:.4f}")
+        # The target_idx used here should match the one saved with these params
 
         # Manual Inverse Transform for StandardScaler: value = (scaled_value * std_dev) + mean
         preds_orig = (preds_scaled_flat * target_scale) + target_mean
@@ -217,7 +237,7 @@ def main():
     plt.grid(True)
     plt.tight_layout() # Adjust layout to prevent labels overlapping
     # Save the plot
-    plot_filename = 'plots/actual_vs_predicted_prices.png'
+    plot_filename = 'plots/actual_vs_predicted_prices_no_ic.png' # Changed filename
     plt.savefig(plot_filename)
     print(f"Saved prediction quality plot to: {plot_filename}")
     plt.show() # Display the plot as well
