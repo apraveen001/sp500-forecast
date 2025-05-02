@@ -4,7 +4,7 @@ import os
 import joblib
 import numpy as np
 
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.models import load_model
 
 from data_utils import load_sp500_csv, preprocess_prices
@@ -54,9 +54,47 @@ def prepare_data(window_size: int = 20, ic_window: int = 252):
         .dropna()
     )
 
+    # --- Add this temporarily in train.py ---
+    print("\n--- Checking df_all BEFORE scaling in training ---")
+    print(f"df_all shape: {df_all.shape}")
+    print("Columns are:", list(df_all.columns)) # Confirm 'Close' is first
+
+    # Check the 'Close' column specifically
+    if 'Close' in df_all.columns:
+        print("\n'Close' column stats BEFORE scaling:")
+        # Use .astype(float) just in case it's read as object
+        print(df_all['Close'].astype(float).describe())
+        print("\nFirst 5 'Close' values BEFORE scaling:")
+        print(df_all['Close'].head())
+        print("\nLast 5 'Close' values BEFORE scaling:")
+        print(df_all['Close'].tail())
+    else:
+        print("Error: 'Close' column not found in df_all just before scaling!")
+    print("--- End check ---\n")
+    # --- End temporary addition ---
     # 5. Scale
-    scaler = MinMaxScaler()
+    scaler = StandardScaler()
+    
+    # --- Add this temporarily in train.py ---
+    print("\n--- Columns fed into scaler during TRAINING ---")
+    print(list(df_all.columns))
+    print("--- End training columns ---\n")
+    # --- End temporary addition ---
     data_scaled = scaler.fit_transform(df_all)
+    
+    # --- Add this AFTER fitting scaler in train.py ---
+    target_idx = list(df_all.columns).index('Close') # Get correct index
+    target_mean = scaler.mean_[target_idx]
+    target_scale = scaler.scale_[target_idx] # Note: For StandardScaler, .scale_ IS the standard deviation
+    print(f"\n--- Saving Target Params for StandardScaler ---")
+    print(f"Target ('Close') Index: {target_idx}")
+    print(f"Target Mean: {target_mean}")
+    print(f"Target StdDev (scaler.scale_): {target_scale}")
+    # Save these params
+    joblib.dump({'mean': target_mean, 'scale': target_scale}, 'models/target_scaler_params.pkl')
+    print("Saved target mean and std dev to models/target_scaler_params.pkl")
+    print("--- End saving target params ---\n")
+    # --- End addition ---
 
     # persist scaler
     os.makedirs('models', exist_ok=True)
@@ -89,20 +127,20 @@ def main():
     train_lstm(model, X_train, y_train, X_val, y_val)
     model.save('models/lstm_model.h5')
 
-    # 9. Invert-scaling helpers
-    scaler = joblib.load('models/scaler.pkl')
-    scale, min_ = scaler.scale_[target_idx], scaler.min_[target_idx]
+    # # 9. Invert-scaling helpers
+    # scaler = joblib.load('models/scaler.pkl')
+    # scale, min_ = scaler.scale_[target_idx], scaler.min_[target_idx]
 
-    # 10. Generate test predictions
-    preds = model.predict(X_test).flatten()
-    preds_orig = preds * scale + min_
-    y_test_orig = y_test * scale + min_
+    # # 10. Generate test predictions
+    # preds = model.predict(X_test).flatten()
+    # preds_orig = preds * scale + min_
+    # y_test_orig = y_test * scale + min_
 
-    # 11. Train & save SVM
-    X_svm, y_svm = build_svm_data(preds_orig, y_test_orig)
-    svm = build_svm()
-    train_svm(svm, X_svm, y_svm)
-    joblib.dump(svm, 'models/svm_model.pkl')
+    # # 11. Train & save SVM
+    # X_svm, y_svm = build_svm_data(preds_orig, y_test_orig)
+    # svm = build_svm()
+    # train_svm(svm, X_svm, y_svm)
+    # joblib.dump(svm, 'models/svm_model.pkl')
 
 
 if __name__ == '__main__':
