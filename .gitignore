@@ -10,3 +10,5 @@ __pycache__
 /sp500_20_years.csv
 *.DS_Store
 *.ipynb_checkpoints
+plots/
+models/
