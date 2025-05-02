@@ -38,20 +38,21 @@ def prepare_data(window_size: int = 20, ic_window: int = 252):
     df_raw = load_sp500_csv('data/sp500_20_years.csv')
     df = preprocess_prices(df_raw)
 
-    # 2. ICs (ARMA-GARCH + entropy)
+    # 2. ICs (ARMA-GARCH + entropy) - KEEPING THESE
     ic_df = rolling_initial_conditions(df['Close'], window=ic_window)
 
-    # 3. Technical features
+    # 3. Technical features - KEEPING THESE
     tech_df = build_technical_features(df)
 
-    # 4. Merge, include Close
+    # 4. Merge, include Close - USING FULL FEATURE SET
     df_all = (
-        df[['Close']]
+        df[['Close']] # Ensure 'Close' is first if target_idx=0 is assumed
         .join(tech_df, how='inner')
         .join(ic_df, how='inner')
         .dropna()
     )
-    print(f"Columns before scaling: {list(df_all.columns)}") # Debug print
+    print(f"Columns before scaling (Full Features): {list(df_all.columns)}") # Debug print
+    print(f"Shape after merging features and dropping NaNs: {df_all.shape}")
 
     # 5. Scale using StandardScaler
     scaler = StandardScaler()
@@ -63,11 +64,15 @@ def prepare_data(window_size: int = 20, ic_window: int = 252):
     print("Saved StandardScaler object to models/scaler.pkl")
 
     # 7. Save target parameters for inverse transform
-    target_idx = list(df_all.columns).index('Close') # Should be 0
+    try:
+        target_idx = list(df_all.columns).index('Close') # Find index of 'Close'
+    except ValueError:
+        print("ERROR: 'Close' column not found in df_all columns!")
+        raise
     target_mean = scaler.mean_[target_idx]
     target_scale = scaler.scale_[target_idx] # Std Dev for StandardScaler
     joblib.dump({'mean': target_mean, 'scale': target_scale}, 'models/target_scaler_params.pkl')
-    print("Saved target mean and std dev to models/target_scaler_params.pkl")
+    print(f"Saved target mean ({target_mean:.2f}) and std dev ({target_scale:.2f}) for target_idx {target_idx}")
 
     # 8. Window the scaled data
     X, y = create_windowed_dataset_multivariate(data_scaled, window_size, target_idx)
@@ -91,23 +96,21 @@ def main():
     window_size = 20
     ic_window   = 252
 
-    # Prepare data (scaling happens inside)
+    # Prepare data (scaling happens inside, using full feature set)
     X_train, y_train, X_val, y_val, X_test, y_test, _ = prepare_data(window_size, ic_window)
 
-    # Build the LSTM model (using the updated build_lstm_model function)
-    # Input shape is (window_size, num_features)
+    # Build the LSTM model (using the updated simpler build_lstm_model function)
     input_shape = (window_size, X_train.shape[2])
     model = build_lstm_model(input_shape=input_shape) # lr defaults to 0.001
 
-    # Train the LSTM model (using the updated train_lstm function settings)
-    # Pass the increased epochs and patience directly or rely on defaults set in train_lstm
+    # Train the LSTM model with moderate parameters
     history = train_lstm(
         model,
         X_train, y_train,
         X_val, y_val,
-        epochs=200,  # Explicitly set higher epochs
-        batch_size=32, # Keep batch size standard
-        early_stopping_patience=20 # Explicitly set higher patience
+        epochs=150,  # Moderate epochs
+        batch_size=32,
+        early_stopping_patience=15 # Moderate patience
     )
 
     # Save the trained model
@@ -120,13 +123,13 @@ def main():
         plt.figure(figsize=(12, 6))
         plt.plot(history.history['loss'], label='Training Loss')
         plt.plot(history.history['val_loss'], label='Validation Loss')
-        plt.title('LSTM Model Training History (Loss)')
+        plt.title('LSTM Model Training History (Loss - Simpler Model)')
         plt.xlabel('Epoch')
         plt.ylabel('Loss (MSE)')
         plt.legend()
         plt.grid(True)
-        plt.savefig('plots/training_history_loss.png')
-        print("Saved training history plot to plots/training_history_loss.png")
+        plt.savefig('plots/training_history_loss_simpler.png')
+        print("Saved training history plot to plots/training_history_loss_simpler.png")
         # plt.show() # Optionally display plot
     except Exception as plot_e:
         print(f"Could not plot training history: {plot_e}")
